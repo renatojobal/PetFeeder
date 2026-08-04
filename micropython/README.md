@@ -39,6 +39,18 @@ esptool --port "$ESP_PORT" --baud 460800 write-flash -z 0x1000 ESP32_GENERIC-vX.
 
 Download the matching build from https://micropython.org/download/ESP32_GENERIC/.
 
+## Status LED
+
+The red LED on `D5` (GPIO5) is driven by a hardware timer (`led.py`) and shows
+the device state at a glance:
+
+| Pattern | State |
+| ------- | ----- |
+| Fast blink (~5 Hz)   | Booting / connecting to WiFi |
+| Blip every ~3 s      | Connected & idle -- ready (heartbeat) |
+| Solid on             | Feeding |
+| Very fast blink (~10 Hz) | Connection lost / error |
+
 ## Run the feed test
 
 This board (CH340) auto-resets whenever the serial port opens, which races

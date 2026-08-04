@@ -25,9 +25,6 @@ class Motor:
         self.type = cfg.MOTOR_TYPE
         self._state = "stop"
 
-        self.led = Pin(cfg.LED_PIN, Pin.OUT)
-        self.led.value(0)
-
         if self.type == STEPPER:
             self.dir = Pin(cfg.STEPPER_DIR_PIN, Pin.OUT)
             self.en  = Pin(cfg.STEPPER_EN_PIN, Pin.OUT)
@@ -44,7 +41,6 @@ class Motor:
     # -- low-level state changes ---------------------------------------------
     def feed(self):
         """Drive the auger forward and keep going until stop()/reverse()."""
-        self.led.value(1)
         if self.type == STEPPER:
             self.en.value(0)                         # enable driver
             self.dir.value(1)                        # forward
@@ -70,7 +66,6 @@ class Motor:
             self.en.value(1)                         # disable driver
         else:
             self.pwm.duty_ns(self.cfg.FEED_STOP_US * 1000)
-        self.led.value(0)
         self._state = "stop"
 
     # -- introspection (used by tests) ---------------------------------------
@@ -87,12 +82,33 @@ class Motor:
         return abs(self.pwm.duty_ns() - self.cfg.FEED_RATE_US * 1000) < _SERVO_TOL_NS
 
     # -- high-level routine ---------------------------------------------------
-    def run_feed_cycle(self):
-        """Full dispense: feed 2 s -> reverse 0.5 s -> feed 2 s -> stop."""
-        self.feed()
-        time.sleep_ms(self.cfg.FEED_MS)
-        self.reverse()
-        time.sleep_ms(self.cfg.REVERSE_MS)
-        self.feed()
-        time.sleep_ms(self.cfg.FEED_MS)
-        self.stop()
+    def _hold(self, ms, ok):
+        """Run for ``ms`` (accurate regardless of ok() cost), checking ok()
+        along the way. Returns False if ok() asks to abort."""
+        end = time.ticks_add(time.ticks_ms(), ms)
+        while time.ticks_diff(end, time.ticks_ms()) > 0:
+            if ok is not None and not ok():
+                return False
+            time.sleep_ms(50)
+        return True
+
+    def run_feed_cycle(self, ok=None):
+        """Full dispense: feed 2 s -> reverse 0.5 s -> feed 2 s -> stop.
+
+        ok: optional callback checked periodically; return False to abort.
+        Returns True if it completed, False if aborted. The motor is always
+        left stopped either way.
+        """
+        try:
+            self.feed()
+            if not self._hold(self.cfg.FEED_MS, ok):
+                return False
+            self.reverse()
+            if not self._hold(self.cfg.REVERSE_MS, ok):
+                return False
+            self.feed()
+            if not self._hold(self.cfg.FEED_MS, ok):
+                return False
+        finally:
+            self.stop()
+        return True

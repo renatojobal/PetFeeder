@@ -85,6 +85,15 @@ def _exec(s, code, stream=False, timeout=60):
 
 def main():
     cmd = sys.argv[1]
+    # "reset" just pulses the port open/closed so the board reboots and runs
+    # boot.py/main.py on its own -- no raw REPL, no Ctrl-C to interrupt it.
+    if cmd == "reset":
+        s = serial.Serial(PORT, BAUD, timeout=0.2)
+        time.sleep(0.5)
+        s.close()
+        print("reset: board rebooted")
+        return
+
     s = serial.Serial(PORT, BAUD, timeout=0.2)
     try:
         _enter_raw(s)
@@ -101,7 +110,8 @@ def main():
         elif cmd == "run":
             with open(sys.argv[2]) as f:
                 code = f.read()
-            _exec(s, code, stream=True)
+            timeout = int(os.environ.get("ESP_RUN_TIMEOUT", "60"))
+            _exec(s, code, stream=True, timeout=timeout)
         else:
             raise SystemExit("unknown command: " + cmd)
         s.write(b"\r\x02")  # Ctrl-B: back to friendly REPL

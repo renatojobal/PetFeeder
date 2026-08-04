@@ -30,8 +30,9 @@ FEED_RATE_US     = _c["servo"]["feed_rate_us"]
 FEED_REVERSAL_US = _c["servo"]["feed_reversal_us"]
 FEED_STOP_US     = _c["servo"]["feed_stop_us"]
 
-FEED_MS    = _c["feed"]["feed_ms"]
-REVERSE_MS = _c["feed"]["reverse_ms"]
+FEED_MS         = _c["feed"]["feed_ms"]
+REVERSE_MS      = _c["feed"]["reverse_ms"]
+FEED_COOLDOWN_S = _c["feed"].get("cooldown_s", 30)   # min seconds between feeds
 
 WIFI_SSID     = _c["wifi"]["ssid"]
 WIFI_PASSWORD = _c["wifi"]["password"]

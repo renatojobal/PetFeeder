@@ -19,7 +19,8 @@
   },
   "feed": {
     "feed_ms": 2000,
-    "reverse_ms": 500
+    "reverse_ms": 500,
+    "cooldown_s": 30
   },
   "wifi": {
     "ssid": "YOUR_WIFI_SSID",
