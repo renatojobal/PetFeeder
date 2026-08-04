@@ -35,3 +35,9 @@
 build/
 .vscode/
 sdkconfig
+
+# MicroPython
+__pycache__/
+*.pyc
+# Local secrets (WiFi / Telegram) -- keep config.json.default committed
+micropython/config.json

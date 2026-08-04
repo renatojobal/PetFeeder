@@ -1,0 +1,32 @@
+{
+  "motor_type": "servo",
+  "pins": {
+    "pwm": 18,
+    "button": 19,
+    "led": 5,
+    "stepper_dir": 21,
+    "stepper_en": 22
+  },
+  "stepper": {
+    "freq": 150,
+    "duty": 32768
+  },
+  "servo": {
+    "freq": 50,
+    "feed_rate_us": 1333,
+    "feed_reversal_us": 1722,
+    "feed_stop_us": 1500
+  },
+  "feed": {
+    "feed_ms": 2000,
+    "reverse_ms": 500
+  },
+  "wifi": {
+    "ssid": "YOUR_WIFI_SSID",
+    "password": "YOUR_WIFI_PASSWORD"
+  },
+  "telegram": {
+    "token": "YOUR_BOT_TOKEN",
+    "allowed_chat_ids": []
+  }
+}
