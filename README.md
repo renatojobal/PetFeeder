@@ -1,35 +1,47 @@
 # PetFeeder 🐾
 
-A 3D-printed, ESP32-powered automatic pet feeder.
+A 3D-printed, **ESP32-powered automatic pet feeder** controlled from a **Telegram
+bot**. Send `/feed` from your phone and the ESP32 spins an auger to dispense food.
 
-This is a fork of [**hardrive9000/PetFeeder**](https://github.com/hardrive9000/PetFeeder)
-that adds a **MicroPython firmware with Telegram control** alongside the original
-ESP-IDF (C) firmware. The hardware, 3D parts, and schematics are unchanged — you
-just pick which firmware to run.
+Runs **MicroPython** on the ESP32. The firmware lives in [`micropython/`](micropython/);
+this README is the single source of truth for building and running it.
 
-## What this fork adds
+> Fork of [hardrive9000/PetFeeder](https://github.com/hardrive9000/PetFeeder)
+> (hardware, 3D parts, schematics). The firmware here is a from-scratch
+> MicroPython rewrite with Telegram control, safety guardrails, and a status LED.
 
-|              | Original (upstream, `Code/`)      | This fork adds (`micropython/`)                    |
-| ------------ | --------------------------------- | -------------------------------------------------- |
-| Language     | ESP-IDF / C                       | MicroPython                                         |
-| Control      | Local Wi-Fi web page + button     | **Telegram bot** — feed from anywhere              |
-| Feedback     | LED on during feed                | Status-LED **patterns** (booting / ready / feeding / error) |
-| Safety       | —                                 | Emergency `/stop`, feed **cooldown**, busy guard, anti-flood resync |
+## Features
 
-Both firmwares drive the same feeder; run one or the other.
+- 📲 **Telegram control** — feed from anywhere: `/feed`, `/stop`, `/status`, …
+- 🔒 **Access control** — feeding restricted to an allow-list of chat ids
+- 🛡️ **Guardrails** — emergency stop, feed cooldown, busy guard, and anti-flood
+  resync (a queue of offline `/feed`s can't dump a pile of food on reconnect)
+- 💡 **Status LED** — booting / ready / feeding / error at a glance
+- ⚙️ Drives a **continuous-rotation servo** (default) or a **stepper**
 
 ## Hardware
 
 - **ESP32 DevKit V1** (WROOM-32) — verified on ESP32-D0WD-V3.
 - **Continuous-rotation servo** (MG995 360° / MG996R continuous).
   ⚠️ The auger needs **continuous rotation** — a standard **positional/180° servo
-  will not work** (it jerks to angles instead of turning). A stepper is also supported.
-- Red **status LED** + resistor (100–330 Ω), **470 µF** capacitor across the servo
-  power, and a **5 V supply capable of ≥1.5–2 A** (the servo alone pulls ~1 A).
-- Wiring diagrams: [`Schematic/`](Schematic/) — `pet_feeder_servo_schematic.png`
-  and `pet_feeder_stepper_schematic.png`.
+  will not work** (it jerks to fixed angles instead of turning). A stepper is
+  also supported (`motor_type: "stepper"`).
+- Red **status LED** + resistor (100–330 Ω), a **470 µF** capacitor across the
+  servo power, and a **5 V supply capable of ≥1.5–2 A** (the servo alone pulls ~1 A).
+- Wiring diagrams in [`Schematic/`](Schematic/) (`pet_feeder_servo_schematic.png`,
+  `pet_feeder_stepper_schematic.png`).
 
-## 3D-printed parts
+### Pin map (`config.json → pins`)
+
+| GPIO | Role |
+| ---- | ---- |
+| 18 (`D18`) | Servo signal / stepper step (PWM) |
+| 5  (`D5`)  | Status LED |
+| 21 (`D21`) | Stepper DIR (stepper only) |
+| 22 (`D22`) | Stepper EN (stepper only) |
+| 19 (`D19`) | Button — defined but **unused** by this firmware |
+
+### 3D-printed parts
 
 In [`3D/`](3D/): `MainBody`, `Hopper`, `LeadScrew_Top` / `LeadScrew_Bottom` (the
 auger), `ServoMount`, `ServoShim`, `MotorMount`, `Elbow`.
@@ -37,31 +49,150 @@ auger), `ServoMount`, `ServoShim`, `MotorMount`, `Elbow`.
 ## Repository layout
 
 ```
-Code/         Original ESP-IDF (C) firmware — web page + button control
-micropython/  MicroPython firmware — Wi-Fi + Telegram bot (see its README)
+micropython/  MicroPython firmware (source of truth for the code)
+  main.py            entry point (runs at boot): Wi-Fi → motor → LED → bot
+  config.py          loads config.json and exposes it as attributes
+  config.json.default settings template (copy to config.json)
+  wifi.py            Wi-Fi station connect with retry/reconnect
+  motor.py           Motor driver: feed / reverse / stop / run_feed_cycle
+  bot.py             Telegram bot: long-poll, commands, allow-list, guardrails
+  led.py             timer-driven status-LED patterns
+  test_motor_feed.py on-device test: motor feeds for 2 s in a row
+  tools/espctl.py    host helper: copy files / run scripts / reset the board
 3D/           STL files for the printed enclosure and auger
 Schematic/    Wiring diagrams (servo and stepper variants)
-LICENSE       Apache License 2.0
 ```
 
-## Firmware options
+---
 
-### 🐍 MicroPython + Telegram — recommended · [`micropython/`](micropython/)
+# Running it on an ESP32
 
-Wi-Fi station + a Telegram bot that drives the feeder, with guardrails and a
-status LED. Control it from your phone, anywhere.
+## 1. Prerequisites (on your computer)
 
-Bot commands: `/feed`, `/stop`, `/status`, `/ping`, `/reboot`, `/id`, `/help`
-(feeding is restricted to an allow-list of chat ids).
+```sh
+pip install esptool mpremote            # or: pipx install esptool mpremote
+export ESP_PORT=/dev/cu.usbserial-XXXX  # your board's port: ls /dev/cu.usb*
+```
 
-👉 **Full setup, flashing, and usage: [`micropython/README.md`](micropython/README.md).**
+## 2. Flash MicroPython (one time — wipes any existing firmware)
 
-### ⚙️ Original ESP-IDF (C) — [`Code/`](Code/)
+```sh
+esptool --port "$ESP_PORT" flash-id                 # confirm chip = ESP32
+esptool --port "$ESP_PORT" erase-flash
+esptool --port "$ESP_PORT" --baud 460800 write-flash -z 0x1000 ESP32_GENERIC-vX.Y.Z.bin
+```
 
-The upstream firmware: connects to Wi-Fi, serves an on/off web page on the local
-network, and feeds on a button press. Build with the ESP-IDF toolchain
-(`idf.py build flash`); Wi-Fi credentials are set via `idf.py menuconfig`. Choose
-stepper vs. servo with the `STEPPER_MOTOR` define in `Code/main/main.c`.
+Download the matching build from https://micropython.org/download/ESP32_GENERIC/.
+
+## 3. Create a Telegram bot
+
+1. Message [@BotFather](https://t.me/BotFather) → `/newbot`, follow the prompts.
+2. Copy the **HTTP API token** it gives you.
+
+## 4. Configure
+
+From the `micropython/` directory:
+
+```sh
+cd micropython
+cp config.json.default config.json    # then edit config.json
+```
+
+Fields to set in `config.json`:
+
+| Field | What to put |
+| ----- | ----------- |
+| `motor_type` | `"servo"` (default) or `"stepper"` |
+| `wifi.ssid` / `wifi.password` | Your 2.4 GHz Wi-Fi network |
+| `telegram.token` | The BotFather token |
+| `telegram.allowed_chat_ids` | Chat ids allowed to feed (see step 6). Leave `[]` to run **open** — anyone who finds the bot can feed |
+| `servo.feed_rate_us` / `feed_stop_us` / `feed_reversal_us` | Continuous-servo pulse widths. If the servo **creeps at rest**, tune `feed_stop_us` (~1500); if it spins the wrong way / too fast, adjust the others |
+| `feed.feed_ms` / `reverse_ms` / `cooldown_s` | Cycle timing + cooldown |
+
+`config.json` is **gitignored** (it holds your secrets); `config.json.default`
+is the committed template.
+
+## 5. Deploy to the board
+
+`tools/espctl.py` copies files, runs scripts, and resets the board. (It exists
+because CH340 boards auto-reset when the serial port opens, which races
+`mpremote`'s raw-REPL handshake — `espctl` waits for boot before talking.)
+
+```sh
+PY=python3   # any python with pyserial installed
+
+# copy the firmware
+for f in config.json config.py wifi.py motor.py bot.py led.py main.py; do
+  $PY tools/espctl.py put "$f" "$f"
+done
+
+# install the requests library the bot needs (Wi-Fi must be set in config.json).
+# mpremote's `mip install` can't enter the raw REPL on this CH340 board, so do
+# it on-device:
+printf 'import wifi, config, mip\nwifi.connect(config)\nmip.install("requests")\n' > /tmp/inst.py
+$PY tools/espctl.py run /tmp/inst.py
+
+# reboot so main.py runs the bot
+$PY tools/espctl.py reset
+```
+
+## 6. Verify
+
+- **LED:** fast blink (connecting) → a brief blip every ~3 s (online & ready).
+- In Telegram, message your bot:
+  - `/ping` → `pong` (it's alive and online)
+  - `/id` → your chat id — add it to `telegram.allowed_chat_ids`, then re-copy
+    `config.json` and `reset` to lock feeding to you
+  - `/feed` → `Feeding...` → the servo runs the cycle → `Done!`
+
+Once it's running you can power the ESP32 from the 5 V supply and unplug USB —
+it reconnects and runs on its own.
+
+## 7. Motor feed test (optional, no Wi-Fi)
+
+A hardware sanity check that the motor feeds for 2 s continuously:
+
+```sh
+$PY tools/espctl.py put config.json config.json
+$PY tools/espctl.py put config.py   config.py
+$PY tools/espctl.py put motor.py    motor.py
+$PY tools/espctl.py run test_motor_feed.py
+# -> PASS: fed continuously for ~2000 ms ... 0 interruptions
+```
+
+---
+
+## Telegram commands
+
+| Command | Action | Access |
+| ------- | ------ | ------ |
+| `/feed`   | Run one feed cycle (feed 2 s → reverse 0.5 s → feed 2 s → stop) | allow-list |
+| `/stop`   | Emergency stop — stops the motor, aborts an in-progress feed | allow-list |
+| `/reboot` | Soft-restart the ESP32 | allow-list |
+| `/status` | Motor state, uptime, Wi-Fi IP, last feed, cooldown | open |
+| `/ping`   | Liveness check → `pong` | open |
+| `/id`     | Show your chat id | open |
+| `/help`   | Command list | open |
+
+## Status LED (GPIO5)
+
+| Pattern | State |
+| ------- | ----- |
+| Fast blink (~5 Hz)       | Booting / connecting to Wi-Fi |
+| Blip every ~3 s          | Connected & idle — ready (heartbeat) |
+| Solid on                 | Feeding |
+| Very fast blink (~10 Hz) | Connection lost / error |
+
+## `espctl` reference
+
+| Command | Does |
+| ------- | ---- |
+| `espctl.py put <local> <remote>` | Copy a file to the board's filesystem |
+| `espctl.py run <script>`         | Run a local script on the board, streaming output |
+| `espctl.py reset`                | Reboot the board (so `main.py` runs), no REPL interrupt |
+
+Env: `ESP_PORT` selects the serial port; `ESP_RUN_TIMEOUT` (seconds) extends the
+`run` timeout.
 
 ## Credits & license
 
