@@ -1,11 +1,12 @@
 {
-  "motor_type": "servo",
+  "motor_type": "stepper",
   "pins": {
-    "pwm": 18,
+    "in1": 18,
+    "in2": 21,
+    "in3": 22,
+    "in4": 23,
     "button": 19,
-    "led": 5,
-    "stepper_dir": 21,
-    "stepper_en": 22
+    "led": 5
   },
   "stepper": {
     "freq": 150,
