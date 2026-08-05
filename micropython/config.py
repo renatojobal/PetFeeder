@@ -16,11 +16,12 @@ except OSError:
 MOTOR_TYPE = _c["motor_type"]
 
 _pins = _c["pins"]
-PWM_PIN         = _pins["pwm"]
+IN1_PIN         = _pins["in1"]
+IN2_PIN         = _pins["in2"]
+IN3_PIN         = _pins["in3"]
+IN4_PIN         = _pins["in4"]
 BUTTON_PIN      = _pins["button"]
 LED_PIN         = _pins["led"]
-STEPPER_DIR_PIN = _pins["stepper_dir"]
-STEPPER_EN_PIN  = _pins["stepper_en"]
 
 STEPPER_FREQ = _c["stepper"]["freq"]
 STEPPER_DUTY = _c["stepper"]["duty"]
