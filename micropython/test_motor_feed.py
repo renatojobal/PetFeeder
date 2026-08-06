@@ -20,12 +20,15 @@ def test_feed_dispenses_configured_angle():
     print("== feed test: spin {} deg = {} half-steps @ {} us/step ==".format(
         config.FEED_DEGREES, expected, config.STEPPER_STEP_DELAY_US))
 
-    # Count the half-steps actually emitted by wrapping _step.
-    count = {"n": 0}
+    # Track NET travel by summing the direction of every _step. Anti-jam wiggles
+    # add reverse steps that cancel out, so net -- not raw count -- must equal the
+    # configured angle. `total` also records the raw half-step count for info.
+    move = {"net": 0, "total": 0}
     _orig_step = motor._step
     def _counting_step(direction):
         _orig_step(direction)
-        count["n"] += 1
+        move["net"] += direction
+        move["total"] += 1
     motor._step = _counting_step
 
     t0 = time.ticks_ms()
@@ -34,13 +37,13 @@ def test_feed_dispenses_configured_angle():
 
     # --- checks -------------------------------------------------------------
     assert done, "feed cycle reported not completed"
-    assert count["n"] == expected, \
-        "stepped {} times, expected {}".format(count["n"], expected)
+    assert abs(move["net"]) == expected, \
+        "net travel {} half-steps, expected {}".format(abs(move["net"]), expected)
     assert motor.state == "stop", "motor not in stop state after feed"
     assert not any(p.value() for p in motor.pins), "coils still energized after feed"
 
-    print("PASS: dispensed {} half-steps ({} deg) in {} ms, coils released".format(
-        count["n"], config.FEED_DEGREES, dt))
+    print("PASS: net {} half-steps ({} deg), {} total incl. wiggle, in {} ms".format(
+        abs(move["net"]), config.FEED_DEGREES, move["total"], dt))
     return True
 
 

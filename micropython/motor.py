@@ -46,6 +46,11 @@ class Motor:
         ]
         self.step_delay = cfg.STEPPER_STEP_DELAY_US    # us per half-step
         self.feed_degrees = cfg.FEED_DEGREES           # how far one /feed turns
+        # Anti-jam: every antijam_every_deg of travel, back off antijam_back_deg
+        # then push forward again to shake loose a stuck kibble. Smaller interval
+        # = more frequent wiggles. back_deg = 0 disables it (one continuous spin).
+        self.antijam_back_deg = getattr(cfg, "FEED_ANTIJAM_BACK_DEG", 0)
+        self.antijam_every_deg = getattr(cfg, "FEED_ANTIJAM_EVERY_DEG", 180)
         # Which way dispenses food. Flip feed.feed_reverse in config.json if the
         # auger pushes food the wrong way once it's loaded (no code change).
         self._dispense_dir = 1 if getattr(cfg, "FEED_REVERSE", False) else -1
@@ -76,21 +81,46 @@ class Motor:
     def run_feed_cycle(self, ok=None):
         """Dispense one portion: spin the auger forward by cfg.FEED_DEGREES.
 
+        If antijam_back_deg > 0, every antijam_every_deg of forward travel the
+        auger backs off that many degrees and re-advances the same amount before
+        continuing -- a wiggle to break a jam. It's position-neutral, so the net
+        forward travel is always exactly FEED_DEGREES.
+
         ok: optional callback checked ~every 50 ms; return False to abort.
         Returns True if it completed, False if aborted. The motor is always left
         stopped either way.
         """
-        steps = self.feed_degrees * STEPS_PER_REV // 360
+        total = self.feed_degrees * STEPS_PER_REV // 360
+        interval = max(1, self.antijam_every_deg * STEPS_PER_REV // 360)  # steps between wiggles
+        back = self.antijam_back_deg * STEPS_PER_REV // 360    # steps to back off
         self._state = "feed"
-        last_ok_check = time.ticks_ms()
+        self._last_ok_check = time.ticks_ms()
         try:
-            for _ in range(steps):
-                self._step(self._dispense_dir)
-                time.sleep_us(self.step_delay)
-                if time.ticks_diff(time.ticks_ms(), last_ok_check) > 50:
-                    if ok is not None and not ok():
+            done = 0
+            while done < total:
+                # Forward to the next wiggle boundary (or the end).
+                segment = min(interval, total - done)
+                if not self._spin(segment, self._dispense_dir, ok):
+                    return False
+                done += segment
+                # Anti-jam wiggle between segments (never after the last one).
+                if back and done < total:
+                    if not self._spin(back, -self._dispense_dir, ok):
                         return False
-                    last_ok_check = time.ticks_ms()
+                    if not self._spin(back, self._dispense_dir, ok):
+                        return False
             return True
         finally:
             self.stop()
+
+    def _spin(self, steps, direction, ok):
+        """Step `steps` half-steps in `direction`, honouring the ok() callback.
+        Returns False if ok() aborted, True otherwise."""
+        for _ in range(steps):
+            self._step(direction)
+            time.sleep_us(self.step_delay)
+            if time.ticks_diff(time.ticks_ms(), self._last_ok_check) > 50:
+                if ok is not None and not ok():
+                    return False
+                self._last_ok_check = time.ticks_ms()
+        return True

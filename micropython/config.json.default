@@ -13,7 +13,9 @@
   "feed": {
     "feed_degrees": 1080,
     "feed_reverse": false,
-    "cooldown_s": 30
+    "cooldown_s": 30,
+    "antijam_back_deg": 0,
+    "antijam_every_deg": 180
   },
   "wifi": {
     "ssid": "YOUR_WIFI_SSID",
