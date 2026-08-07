@@ -1,137 +1,126 @@
-# motor.py -- feeder motor driver (stepper or servo) for MicroPython / ESP32
+# motor.py -- feeder auger stepper driver for MicroPython / ESP32.
 #
-# Ports the feed() logic from ../Code/main/main.c. Same states, same timing,
-# but exposes small hooks (state / is_feeding) so tests can watch what the
-# hardware is actually doing.
+# Drives a 28BYJ-48 stepper through a ULN2003 board. One /feed spins the auger
+# forward by cfg.FEED_DEGREES at cfg.STEPPER_STEP_DELAY_US per half-step.
+#
+# The feed is measured in STEPS (a fixed rotation), not wall-clock time: an
+# optional ok() callback can stretch how LONG a feed takes but never changes how
+# FAR the auger turns. A stepper only moves while it is actively stepped, so this
+# matters.
+#
+# Stepper-only by design. Other motor types (continuous servo, DC + encoder, ...)
+# were removed; a future layered rewrite can reintroduce them behind a common
+# Motor interface -- see README.
 
 import time
-from machine import Pin, PWM
+from machine import Pin
 
-STEPPER = "stepper"
-SERVO   = "servo"
-
-# how close a servo pulse read-back must be to count as "the same" (ns)
-_SERVO_TOL_NS = 20_000
-
-# 28BYJ-48 Half-step sequence for ULN2003
+# 28BYJ-48 half-step sequence for ULN2003 (drives IN1..IN4 in order).
 _SEQ = [
-    [1,0,0,0],
-    [1,1,0,0],
-    [0,1,0,0],
-    [0,1,1,0],
-    [0,0,1,0],
-    [0,0,1,1],
-    [0,0,0,1],
-    [1,0,0,1],
+    [1, 0, 0, 0],
+    [1, 1, 0, 0],
+    [0, 1, 0, 0],
+    [0, 1, 1, 0],
+    [0, 0, 1, 0],
+    [0, 0, 1, 1],
+    [0, 0, 0, 1],
+    [1, 0, 0, 1],
 ]
 
-class Motor:
-    """Drives the feeder auger with either a stepper or a continuous servo.
+# Half-steps per full revolution of the OUTPUT shaft (28BYJ-48 is ~64:1 geared).
+STEPS_PER_REV = 4096
 
-    States: "feed" (forward), "reverse" (anti-clog), "stop".
-    """
+
+class Motor:
+    """Drives the feeder auger with a 28BYJ-48 stepper via a ULN2003 driver."""
 
     def __init__(self, cfg):
         self.cfg = cfg
-        self.type = cfg.MOTOR_TYPE
         self._state = "stop"
         self._step_idx = 0
-        self._dir = 1 # 1 or -1
+        self.pins = [
+            Pin(cfg.IN1_PIN, Pin.OUT),
+            Pin(cfg.IN2_PIN, Pin.OUT),
+            Pin(cfg.IN3_PIN, Pin.OUT),
+            Pin(cfg.IN4_PIN, Pin.OUT),
+        ]
+        self.step_delay = cfg.STEPPER_STEP_DELAY_US    # us per half-step
+        self.feed_degrees = cfg.FEED_DEGREES           # how far one /feed turns
+        # Anti-jam: every antijam_every_deg of travel, back off antijam_back_deg
+        # then push forward again to shake loose a stuck kibble. Smaller interval
+        # = more frequent wiggles. back_deg = 0 disables it (one continuous spin).
+        self.antijam_back_deg = getattr(cfg, "FEED_ANTIJAM_BACK_DEG", 0)
+        self.antijam_every_deg = getattr(cfg, "FEED_ANTIJAM_EVERY_DEG", 180)
+        # Which way dispenses food. Flip feed.feed_reverse in config.json if the
+        # auger pushes food the wrong way once it's loaded (no code change).
+        self._dispense_dir = 1 if getattr(cfg, "FEED_REVERSE", False) else -1
+        self.stop()
 
-        if self.type == STEPPER:
-            self.pins = [
-                Pin(cfg.IN1_PIN, Pin.OUT),
-                Pin(cfg.IN2_PIN, Pin.OUT),
-                Pin(cfg.IN3_PIN, Pin.OUT),
-                Pin(cfg.IN4_PIN, Pin.OUT),
-            ]
-            self.stop()
-            self.step_delay = 1500 # 1.5ms per step, adjustable
-        else:
-            self.pwm = PWM(Pin(cfg.PWM_PIN)) # Note: this may fail if servo uses IN1, but let's assume stepper for now
-            self.pwm.freq(cfg.SERVO_FREQ)
-            self.pwm.duty_ns(cfg.FEED_STOP_US * 1000)
-
-    # -- low-level state changes ---------------------------------------------
-    def feed(self):
-        """Drive the auger forward and keep going until stop()/reverse()."""
-        if self.type == STEPPER:
-            self._dir = -1
-        else:
-            self.pwm.duty_ns(self.cfg.FEED_RATE_US * 1000)
-        self._state = "feed"
-
-    def reverse(self):
-        """Reverse briefly to clear clogs."""
-        if self.type == STEPPER:
-            self._dir = 1
-        else:
-            self.pwm.duty_ns(self.cfg.FEED_REVERSAL_US * 1000)
-        self._state = "reverse"
-
-    def stop(self):
-        """Stop the motor."""
-        if self.type == STEPPER:
-            for p in self.pins:
-                p.value(0)
-        else:
-            self.pwm.duty_ns(self.cfg.FEED_STOP_US * 1000)
-        self._state = "stop"
-
-    # -- introspection (used by tests) ---------------------------------------
+    # -- introspection (used by tests / bot status) --------------------------
     @property
     def state(self):
         return self._state
 
     def is_feeding(self):
-        """True when the hardware is actually driving a forward feed."""
-        if self.type == STEPPER:
-            return self._state == "feed"
-        return abs(self.pwm.duty_ns() - self.cfg.FEED_RATE_US * 1000) < _SERVO_TOL_NS
+        return self._state == "feed"
 
-    # -- high-level routine ---------------------------------------------------
-    def _step(self):
-        self._step_idx = (self._step_idx + self._dir) % len(_SEQ)
+    # -- low level ------------------------------------------------------------
+    def _step(self, direction):
+        self._step_idx = (self._step_idx + direction) % len(_SEQ)
         seq = _SEQ[self._step_idx]
         for i, val in enumerate(seq):
             self.pins[i].value(val)
 
-    def _hold(self, ms, ok):
-        """Run for ``ms`` (accurate regardless of ok() cost), checking ok()
-        along the way. Returns False if ok() asks to abort."""
-        end = time.ticks_add(time.ticks_ms(), ms)
-        last_ok_check = time.ticks_ms()
-        
-        while time.ticks_diff(end, time.ticks_ms()) > 0:
-            if time.ticks_diff(time.ticks_ms(), last_ok_check) > 50:
-                if ok is not None and not ok():
-                    return False
-                last_ok_check = time.ticks_ms()
-            
-            if self.type == STEPPER:
-                self._step()
-                time.sleep_us(self.step_delay)
-            else:
-                time.sleep_ms(50)
-        return True
+    def stop(self):
+        """Stop and de-energize the coils (so they don't sit hot / draw current)."""
+        for p in self.pins:
+            p.value(0)
+        self._state = "stop"
 
+    # -- high-level routine ---------------------------------------------------
     def run_feed_cycle(self, ok=None):
-        """Full dispense: feed 2 s -> reverse 0.5 s -> feed 2 s -> stop.
+        """Dispense one portion: spin the auger forward by cfg.FEED_DEGREES.
 
-        ok: optional callback checked periodically; return False to abort.
-        Returns True if it completed, False if aborted. The motor is always
-        left stopped either way.
+        If antijam_back_deg > 0, every antijam_every_deg of forward travel the
+        auger backs off that many degrees and re-advances the same amount before
+        continuing -- a wiggle to break a jam. It's position-neutral, so the net
+        forward travel is always exactly FEED_DEGREES.
+
+        ok: optional callback checked ~every 50 ms; return False to abort.
+        Returns True if it completed, False if aborted. The motor is always left
+        stopped either way.
         """
+        total = self.feed_degrees * STEPS_PER_REV // 360
+        interval = max(1, self.antijam_every_deg * STEPS_PER_REV // 360)  # steps between wiggles
+        back = self.antijam_back_deg * STEPS_PER_REV // 360    # steps to back off
+        self._state = "feed"
+        self._last_ok_check = time.ticks_ms()
         try:
-            self.feed()
-            if not self._hold(self.cfg.FEED_MS, ok):
-                return False
-            self.reverse()
-            if not self._hold(self.cfg.REVERSE_MS, ok):
-                return False
-            self.feed()
-            if not self._hold(self.cfg.FEED_MS, ok):
-                return False
+            done = 0
+            while done < total:
+                # Forward to the next wiggle boundary (or the end).
+                segment = min(interval, total - done)
+                if not self._spin(segment, self._dispense_dir, ok):
+                    return False
+                done += segment
+                # Anti-jam wiggle between segments (never after the last one).
+                if back and done < total:
+                    if not self._spin(back, -self._dispense_dir, ok):
+                        return False
+                    if not self._spin(back, self._dispense_dir, ok):
+                        return False
+            return True
         finally:
             self.stop()
+
+    def _spin(self, steps, direction, ok):
+        """Step `steps` half-steps in `direction`, honouring the ok() callback.
+        Returns False if ok() aborted, True otherwise."""
+        for _ in range(steps):
+            self._step(direction)
+            time.sleep_us(self.step_delay)
+            if time.ticks_diff(time.ticks_ms(), self._last_ok_check) > 50:
+                if ok is not None and not ok():
+                    return False
+                self._last_ok_check = time.ticks_ms()
         return True

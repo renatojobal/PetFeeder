@@ -3,7 +3,8 @@
 # Commands:
 #   /start, /help  greeting + command list + your chat id
 #   /feed          run one feed cycle (guarded by a cooldown + busy check)
-#   /stop          emergency stop: stop the motor / abort an in-progress feed
+#   /stop          emergency stop: de-energize the motor (a feed runs to
+#                  completion -- it blocks the poll loop and cannot be interrupted)
 #   /status        motor state, uptime, WiFi, last feed, cooldown
 #   /ping          quick liveness check -> "pong"
 #   /id            reply with your chat id (use it to fill allowed_chat_ids)
@@ -24,7 +25,8 @@ from led import READY, FEEDING, ERROR
 
 _API = "https://api.telegram.org/bot%s/%s"
 _LONG_POLL = 20        # seconds Telegram holds a getUpdates open
-_STOP_CHECK_MS = 700   # min gap between network polls while feeding
+_HTTP_SLACK_S = 10     # socket timeout beyond the long-poll hold, so a dead
+                       # connection raises instead of hanging the bot forever
 
 
 class TelegramBot:
@@ -41,9 +43,6 @@ class TelegramBot:
         self._boot = time.ticks_ms()
         self._last_feed = None
         self._feeding = False
-        self._abort = False
-        self._abort_chat = None
-        self._last_stopcheck = 0
 
         if not self.allowed:
             self.log("WARNING: allowed_chat_ids empty -> bot is OPEN to anyone")
@@ -56,7 +55,8 @@ class TelegramBot:
         gc.collect()
         try:
             r = requests.post(self._url("sendMessage"),
-                              json={"chat_id": chat_id, "text": text})
+                              json={"chat_id": chat_id, "text": text},
+                              timeout=_HTTP_SLACK_S)
             r.close()
         except Exception as e:  # never let a send failure kill the poll loop
             self.log("send error:", e)
@@ -64,7 +64,7 @@ class TelegramBot:
     def get_updates(self, timeout):
         gc.collect()
         url = self._url("getUpdates") + "?timeout=%d&offset=%d" % (timeout, self.offset)
-        r = requests.get(url)
+        r = requests.get(url, timeout=timeout + _HTTP_SLACK_S)
         try:
             result = r.json().get("result", [])
         finally:
@@ -113,26 +113,6 @@ class TelegramBot:
         if total:
             self.log("resync: dropped", total, "backlogged update(s)")
 
-    # -- mid-feed stop polling ------------------------------------------------
-    def _feed_ok(self):
-        """Passed to run_feed_cycle; checked often but only hits the network
-        every ~_STOP_CHECK_MS. Returns False once an authorized /stop arrives."""
-        now = time.ticks_ms()
-        if time.ticks_diff(now, self._last_stopcheck) >= _STOP_CHECK_MS:
-            self._last_stopcheck = now
-            try:
-                for u in self.get_updates(0):
-                    self.offset = u["update_id"] + 1
-                    msg = u.get("message") or u.get("edited_message")
-                    if not msg:
-                        continue
-                    if self._cmd_of(msg) == "/stop" and self._authorized(msg["chat"]["id"]):
-                        self._abort = True
-                        self._abort_chat = msg["chat"]["id"]
-            except Exception as e:
-                self.log("stop-check error:", e)
-        return not self._abort
-
     # -- command handling -----------------------------------------------------
     def handle(self, update):
         self.offset = update["update_id"] + 1
@@ -175,7 +155,6 @@ class TelegramBot:
             if not self._authorized(chat_id):
                 self.send(chat_id, "Not authorized (chat id %d)." % chat_id)
                 return
-            self._abort = True            # aborts a feed if one is mid-cycle
             self.motor.stop()
             self._set_led(READY)
             self.send(chat_id, "Stopped. Motor is off.")
@@ -205,12 +184,10 @@ class TelegramBot:
             return
 
         self._feeding = True
-        self._abort = False
-        self._abort_chat = None
         self._set_led(FEEDING)
         self.send(chat_id, "Feeding...")
         try:
-            completed = self.motor.run_feed_cycle(ok=self._feed_ok)
+            self.motor.run_feed_cycle()
         except Exception as e:
             self.motor.stop()
             self.send(chat_id, "Feed failed: %s" % e)
@@ -221,10 +198,7 @@ class TelegramBot:
             self._last_feed = time.ticks_ms()
             self._set_led(READY)
 
-        if completed:
-            self.send(chat_id, "Done!")
-        else:
-            self.send(self._abort_chat or chat_id, "Feed stopped.")
+        self.send(chat_id, "Done!")
 
     # -- main loop ------------------------------------------------------------
     def poll_forever(self):

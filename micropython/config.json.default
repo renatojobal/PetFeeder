@@ -1,27 +1,21 @@
 {
   "motor_type": "stepper",
   "pins": {
-    "in1": 18,
+    "in1": 19,
     "in2": 21,
     "in3": 22,
     "in4": 23,
-    "button": 19,
     "led": 5
   },
   "stepper": {
-    "freq": 150,
-    "duty": 32768
-  },
-  "servo": {
-    "freq": 50,
-    "feed_rate_us": 1333,
-    "feed_reversal_us": 1722,
-    "feed_stop_us": 1500
+    "step_delay_us": 1200
   },
   "feed": {
-    "feed_ms": 2000,
-    "reverse_ms": 500,
-    "cooldown_s": 30
+    "feed_degrees": 1080,
+    "feed_reverse": false,
+    "cooldown_s": 30,
+    "antijam_back_deg": 0,
+    "antijam_every_deg": 180
   },
   "wifi": {
     "ssid": "YOUR_WIFI_SSID",
